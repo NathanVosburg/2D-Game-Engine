@@ -770,12 +770,12 @@ int main(int args, const char * argv[]) {
 		Position b[] = {Position{200, 200}, Position{200, 100}, Position{100, 100}, Position{100, 200}};
 		Position a[] = {Position{200, 200}, Position{100, 100}, Position{300, 100}};
 		ConcaveNgon{4, b, Red, 60, 10, 9}.draw();
-		RegNgon{Position{512, 100}, 50, 6, Blue, 10}.drawRotating();	
-		drawRotatingNgon(Position{512, 200}, 50, 6, Red, -10);	
+		//RegNgon{Position{512, 100}, 50, 6, Blue, 10}.drawRotating();	
+		//drawRotatingNgon(Position{512, 200}, 50, 6, Red, -10);	
 		//flatBottomTriangle(Position{200, 200}, Position{100, 100}, Position{300, 100}, Red);
 		//flatTopTriangle(Position{200, 200}, Position{100, 300}, Position{300, 300}, Red);
 		//drawTriangle(Position{200, 200}, Position{300, 150}, Position{100, 100}, Red);
-		//game();
+		game();
 
 		uint64_t counter1 = mach_absolute_time();
 		//drawNgon(Position{512, 370}, 50, 40, Red);
