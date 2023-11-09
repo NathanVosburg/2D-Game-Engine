@@ -44,12 +44,12 @@ global_variable bool Running = true;
 
 struct mac_game_controller
 {
-    bool wKeyState;
-    bool aKeyState;
-    bool sKeyState;
-    bool dKeyState;
-    float mouseX;
-    float mouseY;
+        bool wKeyState;
+        bool aKeyState;
+        bool sKeyState;
+        bool dKeyState;
+        float mouseX;
+        float mouseY;
 };
 
 struct Position {
@@ -196,9 +196,9 @@ void macOSRefreshBuffer(NSWindow *Window) {
 	}
 
 	bitmapWidth = Window.contentView.bounds.size.width;
-    bitmapHeight = Window.contentView.bounds.size.height;
-    pitch = bitmapWidth * bytesPerPixel;
-    buffer = (uint8_t *)malloc(pitch * bitmapHeight);
+        bitmapHeight = Window.contentView.bounds.size.height;
+        pitch = bitmapWidth * bytesPerPixel;
+        buffer = (uint8_t *)malloc(pitch * bitmapHeight);
 }
 
 // wipes buffer
