@@ -815,8 +815,8 @@ int main(int args, const char * argv[]) {
 		uint64_t endOfFrameTime = mach_absolute_time();
 
 		uint64_t timePerFrame = endOfFrameTime - lastCounter;
-        
-        uint64_t nanosecondsPerFrame = timePerFrame * (timeBase.numer / timeBase.denom);
+
+		uint64_t nanosecondsPerFrame = timePerFrame * (timeBase.numer / timeBase.denom);
         real32 secondsPerFrame = (real32)nanosecondsPerFrame * 1.0E-9;
         real32 framesPerSecond = 1 / secondsPerFrame;
 
