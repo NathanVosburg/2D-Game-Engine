@@ -1,7 +1,10 @@
 // OSX Main
 
 /**
- IMPORTANT NOTE: 
+ CONTROLS:
+ 	WASD - movement
+	Click - shoot
+	Q - exit game 
  */
 
 #include <stdio.h>
@@ -19,6 +22,9 @@
 
 const int numTurrets = 4;
 const double gameSpeed = 7.0;
+const double PI = 3.14159265358979323846;
+const double TWO_PI = 6.28318530718;
+const double HALF_PI = 1.57079632679;
 
 typedef int32_t bool32;
 
@@ -29,6 +35,7 @@ global_variable int bitmapWidth;
 global_variable int bitmapHeight;
 global_variable int bytesPerPixel = 4;
 global_variable int pitch;
+global_variable uint16_t frames = 0;
 
 global_variable int GlobalRenderingWidth = 1024;
 global_variable int GlobalRenderingHeight = 768;
@@ -68,11 +75,15 @@ struct Position {
 	static Position sub(Position a, Position b) {return Position(a.posX-b.posX, a.posY-b.posY);}
 	static Position divide(Position a, Position b) {return Position(a.posX/b.posX, a.posY/b.posY);}
     static Position divide(Position a, double n) {return { a.posX/n, a.posY/n } ;}
+	static double slope(Position a, Position b) {
+		if (a.posX == b.posX) {return std::numeric_limits<double>::infinity();}
+		if (a.posY == b.posY) {return 0;}
+		double slope = (a.posY-b.posY)/(a.posX-b.posX);
+		return slope;}
 
     static Position unitVector(Position start, Position end) {
-        Position a = { Position::divide(Position::sub(end, start), Position::sub(end, start).length())};
-        int x = 5;
-        return a;}
+        return Position{ Position::divide(Position::sub(end, start), Position::sub(end, start).length())};}
+
 };
 
 union Color {
@@ -105,6 +116,7 @@ union Color {
 		alpha = 0;
 	}
 };
+
 
 struct Turret {
 	Position position;
@@ -192,6 +204,208 @@ void macOSRefreshBuffer(NSWindow *Window) {
 // wipes buffer
 internal void clearScreen() {
 	memset(buffer, 0, pitch * bitmapHeight);	 
+}
+
+internal double boundedMin(double nums[], int n, double lowBound) {
+	double min = std::numeric_limits<double>::max();
+	for(int i = 0; i < n; i++) {
+		min = nums[i] < min && nums[i] >= lowBound ? nums[i] : min;
+	}
+	NSLog(@"min: %f", min);
+	return min;
+}
+
+internal double bounded2Min(double nums[], int n, double lowBound) {
+	double min = std::numeric_limits<double>::max();
+	double min2 = std::numeric_limits<double>::max();
+	for(int i = 0; i < n; i++) {
+		if (nums[i] < min && nums[i] >= lowBound) {
+			min2 = min;
+			min = nums[i];
+		} else if (nums[i] < min2 && nums[i] >= lowBound) {
+			min2 = nums[i];}
+	}
+	NSLog(@"min2: %f", min2);
+	return min2;
+}
+
+internal void flatBottomTriangle(Position p1, Position p2, Position p3, Color c) {
+	if (p1.posY < p2.posY) {Position temp = p1; p1 = p2; p2 = temp;}
+	if (p1.posY < p3.posY) {Position temp = p1; p1 = p3; p3 = temp;}
+	if (p2.posX > p3.posX) {Position temp = p2; p2 = p3; p3 = temp;}
+	double yMax = p1.posY;
+	double closeSlope = Position::slope(p1, p2);
+	double farSlope = Position::slope(p1, p3);
+
+	uint8_t *row = (uint8_t *)buffer;
+	row += pitch * (int)yMax;
+	for(int curY = yMax; curY >= p2.posY; curY--) {
+		int startX = (int) ((curY - p1.posY) / closeSlope + p1.posX);
+		int endX = (int) ((curY - p1.posY) / farSlope + p1.posX);
+		uint8_t *pixelChannel = (uint8_t *)row;
+		pixelChannel += max(startX, 0)*4;
+		for(int curX = startX; curX <= endX; curX++) {
+			memcpy(pixelChannel, &c, sizeof(Color));
+			pixelChannel+=4; }
+		row -= pitch;
+	}
+}
+
+internal void flatTopTriangle(Position p1, Position p2, Position p3, Color c) {
+	if (p1.posY > p2.posY) {Position temp = p1; p1 = p2; p2 = temp;}
+	if (p1.posY > p3.posY) {Position temp = p1; p1 = p3; p3 = temp;}
+	if (p2.posX > p3.posX) {Position temp = p2; p2 = p3; p3 = temp;}
+	double yMin = p1.posY;
+	double closeSlope = Position::slope(p1, p2);
+	double farSlope = Position::slope(p1, p3);
+
+	uint8_t *row = (uint8_t *)buffer;
+	row += pitch * (int)yMin;
+	for(int curY = yMin; curY <= p2.posY; curY++) {
+		int startX = (int) ((curY - p1.posY) / closeSlope + p1.posX);
+		int endX = (int) ((curY - p1.posY) / farSlope + p1.posX);
+		uint8_t *pixelChannel = (uint8_t *)row;
+		pixelChannel += max(startX, 0)*4;
+		for(int curX = startX; curX <= endX; curX++) {
+			memcpy(pixelChannel, &c, sizeof(Color));
+			pixelChannel+=4; }
+		row += pitch;
+	}
+}
+
+internal void drawTriangle(Position p1, Position p2, Position p3, Color c) {
+	if (p2.posY < p3.posY) {Position temp = p2; p2 = p3; p3 = temp;}
+	if (p1.posY > p2.posY) {Position temp = p1; p1 = p2; p2 = temp;}
+	if (p1.posY < p3.posY) {Position temp = p1; p1 = p3; p3 = temp;}
+	double slope = Position::slope(p2, p3);
+
+	Position point = {(p1.posY - p2.posY) / slope + p2.posX, p1.posY};
+	flatTopTriangle(p1, p3, point, Red);
+	flatBottomTriangle(p1, p2, point, Red);
+}
+
+// regular polygon
+struct RegNgon {
+	Position center;
+	double radius;
+	int sides;
+	Color color;
+	double rpm;
+	double maxHP;
+	double curHP;
+
+	void draw() {
+		Position last = {center.posX + radius, center.posY};
+		double step = TWO_PI/sides;
+		for(double theta = step; theta < TWO_PI + step; theta += step) {
+			Position next = {center.posX + radius * cos(theta), center.posY + radius * sin(theta)};
+			drawTriangle(center, last, next, color);
+			last = next;
+		}
+	}
+
+	void drawRotating() {
+		Position last = {center.posX + (double)radius * cos(frames/(600.0/rpm)), center.posY + (double)radius * sin(frames/(600.0/rpm))};
+		double step = TWO_PI/sides;
+		double offset = step + atan2((last.posY-center.posY), (last.posX-center.posX));
+		for(double theta = offset; theta < TWO_PI + offset; theta += step) {
+			Position next = {center.posX + radius * cos(theta), center.posY + radius * sin(theta)};
+			drawTriangle(center, last, next, color);
+			last = next;
+		}
+	}
+};
+
+
+struct ConvexNgon{
+	int sides;
+	Position *points;
+	Color color;
+	double rpm;
+	Position center;
+	double maxHP = 1;
+	double curHP = 1;
+
+
+	ConvexNgon(int s, Position p[], Color c, double r, double max, double cur) {
+		sides = s;
+		points = p;
+		color = c;
+		rpm = r;
+		maxHP = max;
+		curHP = cur;
+		double xPos = 0;
+		double yPos = 0;
+		for(int n = 0; n < sides; n++) {
+			xPos += p[n].posX;
+			yPos += p[n].posY;
+		}
+		center = {xPos/sides, yPos/sides};
+	}
+
+	ConvexNgon(int s, Position p[], Color c, double r) {
+		sides = s;
+		points = p;
+		color = c;
+		rpm = r;
+		double xPos = 0;
+		double yPos = 0;
+		for(int n = 0; n < sides; n++) {
+			xPos += p[n].posX;
+			yPos += p[n].posY;
+		}
+		center = {xPos/sides, yPos/sides};
+	}
+
+	void draw() {
+		if(maxHP == curHP) {
+			for(int n = 0; n < sides-1; n++) {
+				drawTriangle(center, points[n], points[n+1], color);
+			} drawTriangle(center, points[0], points[sides-1], color);
+		} else { 
+			for(int n = 0; n < sides-1; n++) {
+				drawTriangle(points[n], points[n+1], Position{(points[n].posX-center.posX)*curHP/maxHP+center.posX, (points[n].posY-center.posY)*curHP/maxHP+center.posY}, color);
+				drawTriangle(points[n+1], Position{(points[n].posX-center.posX)*curHP/maxHP+center.posX, (points[n].posY-center.posY)*curHP/maxHP+center.posY}, Position{(points[n+1].posX-center.posX)*curHP/maxHP+center.posX, (points[n+1].posY-center.posY)*curHP/maxHP+center.posY}, color);
+				/*Position a[] = {points[n], points[n+1], Position{(points[n].posX-center.posX)*curHP/maxHP+center.posX, (points[n].posY-center.posY)*curHP/maxHP+center.posY}, Position{(points[n+1].posX-center.posX)*curHP/maxHP+center.posX, (points[n+1].posY-center.posY)*curHP/maxHP+center.posY}};
+				//TODO TODO TODO mqthy math math math
+				ConcvexNgon{4, a, color, rpm}.draw();*/
+			}
+				drawTriangle(points[0], points[sides-1], Position{(points[0].posX-center.posX)*curHP/maxHP+center.posX, (points[0].posY-center.posY)*curHP/maxHP+center.posY}, color);
+				drawTriangle(points[sides-1], Position{(points[0].posX-center.posX)*curHP/maxHP+center.posX, (points[0].posY-center.posY)*curHP/maxHP+center.posY}, Position{(points[sides-1].posX-center.posX)*curHP/maxHP+center.posX, (points[sides-1].posY-center.posY)*curHP/maxHP+center.posY}, color);
+		}
+	}
+/*
+	void drawRotating() {
+		Position last = {center.posX + (double)radius * cos(frames/(600.0/rpm)), center.posY + (double)radius * sin(frames/(600.0/rpm))};
+		double step = TWO_PI/sides;
+		double offset = step + atan2((last.posY-center.posY), (last.posX-center.posX));
+		for(double theta = offset; theta < TWO_PI + offset; theta += step) {
+			Position next = {center.posX + radius * cos(theta), center.posY + radius * sin(theta)};
+			drawTriangle(center, last, next, color);
+			last = next;
+		}
+	}*/
+};
+
+internal void drawRotatingNgon(Position center, int radius, int sides, Color c, double rpm) {
+	Position last = {center.posX + (double)radius * cos(frames/(600.0/rpm)), center.posY + (double)radius * sin(frames/(600.0/rpm))};
+	double step = TWO_PI/sides;
+    double offset = step + atan2((last.posY-center.posY), (last.posX-center.posX));
+	for(double theta = offset; theta < TWO_PI + offset; theta += step) {
+		Position next = {center.posX + radius * cos(theta), center.posY + radius * sin(theta)};
+		drawTriangle(center, last, next, c);
+		last = next;
+	}
+}
+
+internal void drawNgon(Position center, int radius, int n, Color c) {
+	Position last = {center.posX + radius, center.posY};
+	double step = TWO_PI/n;
+	for(double theta = step; theta < TWO_PI + step; theta += step) {
+		Position next = {center.posX + radius * cos(theta), center.posY + radius * sin(theta)};
+		drawTriangle(center, last, next, c);
+		last = next;
+	}
 }
 
 // draws a circle ... wow
@@ -403,7 +617,7 @@ void fireBullet(Turret source, Position target) {
 }
 
 //bullet updates
-void simulateBullets() {
+void simulateBullets() { 
 	for (Bullet &b: bullets) {
 		if (b.alive) {
 			if (between(0-b.radius, b.position.posX, bitmapWidth+b.radius) && between(0-b.radius, b.position.posY, bitmapHeight+b.radius)) {
@@ -456,6 +670,12 @@ macGetSecondsElapsed(mach_timebase_info_data_t *timeBase,
     return (result);
 }
 
+void game() {
+	simulateBullets();
+	simulateTurrets();
+	drawTurret(player);
+	checkGameState();
+}
 
 int main(int args, const char * argv[]) {
 
@@ -547,21 +767,27 @@ int main(int args, const char * argv[]) {
 		//updating game objects
 		clearScreen();
 
+		Position b[] = {Position{200, 200}, Position{200, 100}, Position{100, 100}, Position{100, 200}};
+		Position a[] = {Position{200, 200}, Position{100, 100}, Position{300, 100}};
+		ConvexNgon{4, b, Red, 60, 10, 9}.draw();
+		RegNgon{Position{512, 100}, 50, 6, Blue, 10}.drawRotating();	
+		drawRotatingNgon(Position{512, 200}, 50, 6, Red, -10);	
+		//flatBottomTriangle(Position{200, 200}, Position{100, 100}, Position{300, 100}, Red);
+		//flatTopTriangle(Position{200, 200}, Position{100, 300}, Position{300, 300}, Red);
+		//drawTriangle(Position{200, 200}, Position{300, 150}, Position{100, 100}, Red);
+		game();
+
 		uint64_t counter1 = mach_absolute_time();
-		//drawCircleOutline(Position{512, 370}, 50, Red);
+		//drawNgon(Position{512, 370}, 50, 40, Red);
 		uint64_t counter2 = mach_absolute_time();
-		//NSLog(@"Fast?? Circle: %llu", (counter2-counter1));
+		NSLog(@"Fast?? Circle: %llu", (counter2-counter1));
 
 		uint64_t counter3 = mach_absolute_time();
 		//drawTurret( Turret{Position{312, 370}, 50, Red, 1, 40, 5, 10, 200});
 		uint64_t counter4 = mach_absolute_time();
-		//NSLog(@"Normal Circle: %llu", (counter4 - counter3));
+		NSLog(@"Normal Circle: %llu", (counter4 - counter3));
 	
 		
-		simulateBullets();
-		simulateTurrets();
-		drawTurret(player);
-		checkGameState();
 
 		//calculating time until next frame update
 		uint64_t workCounter = mach_absolute_time();
@@ -596,6 +822,7 @@ int main(int args, const char * argv[]) {
 
         NSLog(@"Frames Per Second: %f", framesPerSecond);
 
+		frames++;
         lastCounter = mach_absolute_time();
 
 		macGetSecondsElapsed(&timeBase, lastCounter, workCounter);
@@ -605,6 +832,3 @@ int main(int args, const char * argv[]) {
 	}
 	printf("Twinstick Finished Building"); 
 }
-
-
-
