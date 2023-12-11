@@ -10,11 +10,12 @@
 #include <stdio.h>
 #include <AppKit/AppKit.h>
 #include <IOKit/hid/IOHIDLib.h>
-#include<iostream>    
-#include<array>
+#include <iostream>    
 #include <mach/mach_init.h>
 #include <mach/mach_time.h>
 #include <mach-o/dyld.h>
+
+using namespace std;
 
 #define internal static
 #define local_persist static
@@ -48,42 +49,62 @@ struct mac_game_controller
     bool aKeyState;
     bool sKeyState;
     bool dKeyState;
+	bool eKeyState;
     float mouseX;
     float mouseY;
 };
 
+uint16 OBJECT_THING = 0;
+uint16 TURRET_THING = 1;
+uint16 BULLET_THING = 2;
+// Player thing???
 struct Position {
-	double posX;
-	double posY;
+	double x;
+	double y;
 
-	Position(double x, double y) {
-		posX = x;
-		posY = y;
+	Position(double xPos, double yPos) {
+		x = xPos;
+		y = yPos;
 	}
 
 	Position() {
-		posX = 0;
-		posY = 0;
+		x = 0;
+		y = 0;
 	}
 
-	double length() {return sqrt(posX * posX + posY * posY);}
-	void add(Position a) { posX += a.posX; posY += a.posY;}
-	Position mul(double c) { posX *= c; posY *= c; return *this;}
-	Position unitVector() { return Position::divide( {posX, posY} , length());}
+	double length() {return sqrt(x * x + y * y);}
+	void add(Position a) { x += a.x; y += a.y;}
+	Position mul(double c) { x *= c; y *= c; return *this;}
+	Position unitVector() { return Position::divide( {x, y} , length());}
 	
-	static Position add(Position a, Position b) {return Position(a.posX+b.posX, a.posY+b.posY);}
-	static Position sub(Position a, Position b) {return Position(a.posX-b.posX, a.posY-b.posY);}
-	static Position divide(Position a, Position b) {return Position(a.posX/b.posX, a.posY/b.posY);}
-    static Position divide(Position a, double n) {return { a.posX/n, a.posY/n } ;}
+	static Position add(Position a, Position b) {return Position(a.x+b.x, a.y+b.y);}
+	static Position sub(Position a, Position b) {return Position(a.x-b.x, a.y-b.y);}
+	static Position divide(Position a, Position b) {return Position(a.x/b.x, a.y/b.y);}
+    static Position divide(Position a, double n) {return { a.x/n, a.y/n } ;}
+	static double distance(Position a, Position b) {return (a-b).length();}
 	static double slope(Position a, Position b) {
-		if (a.posX == b.posX) {return std::numeric_limits<double>::infinity();}
-		if (a.posY == b.posY) {return 0;}
-		double slope = (a.posY-b.posY)/(a.posX-b.posX);
+		if (a.x == b.x) {return numeric_limits<double>::infinity();}
+		if (a.y == b.y) {return 0;}
+		double slope = (a.y-b.y)/(a.x-b.x);
 		return slope;}
 
     static Position unitVector(Position start, Position end) {
         return Position{ Position::divide(Position::sub(end, start), Position::sub(end, start).length())};}
 
+    Position operator+(Position const& obj)
+    {
+        Position pos;
+        pos.x = x + obj.x;
+        pos.y = y + obj.y;
+        return pos;
+    }
+    Position operator-(Position const& obj)
+    {
+        Position pos;
+        pos.x = x - obj.x;
+        pos.y = y - obj.y;
+        return pos;
+    }
 };
 
 union Color {
@@ -117,50 +138,16 @@ union Color {
 	}
 };
 
-
-struct Turret {
-	Position position;
-	int radius;
-	Color color;
-	int team;
-	int cooldown;
-	int currentHealth;
-	int maxHealth;
-	int framesSinceFired;
-};
-struct Bullet {
-	Position position;
-	int radius;
-	Position velocity;
-	int team;
-	bool alive;
-
-	Bullet(Position p, int r, Position v, int t) {
-		position = p;
-		radius = r;
-		velocity = v;
-		team = t;
-		alive = true;
-	}
-
-	Bullet() {
-		position = Position();
-		velocity = Position();
-		int team = -1;
-		alive = false;
-	}
-};
-
 const Color Red(255, 0, 0);
 const Color Green(0, 255, 0);
 const Color Blue(0, 0, 255);
 const Color TeamColors[3] = {Green, Red, Red};
 
-
 static mac_game_controller KeyboardController = {};
 static mac_game_controller *GameController = &KeyboardController; 
 
 const uint16 wKeyCode = 0x0D;
+const uint16 eKeyCode = 0x0E;
 const uint16 aKeyCode = 0x00;
 const uint16 sKeyCode = 0x01;
 const uint16 dKeyCode = 0x02;
@@ -171,11 +158,8 @@ const int TeamEnemy = 1;
 const int NoTeam = 2;
 
 Position mousePos;
-Turret player;
-Bullet bullets[1024];
-Turret turrets[numTurrets];
-
-
+bool leftMouseButtonDown;
+bool click;
 
 int max(int a, int b) {
 	return a > b ? a : b; }
@@ -183,11 +167,8 @@ int min(int a , int b) {
 	return a < b ? a : b; }
 bool between(int a, int b, int c) {
 	return a < b && b < c;}
-
-bool circleTouch(Position p1, int r1, Position p2, int r2) {
-	return (p1.posX - p2.posX) * (p1.posX - p2.posX) + (p1.posY - p2.posY) * (p1.posY - p2.posY) <= (r1 + r2) * (r1 + r2);}
-bool circleTouch(Bullet b, Turret t) {
-	return circleTouch(b.position, b.radius, t.position, t.radius);}
+bool unorderedBetween(int a, int b, int c) {
+	return (a < b && b < c) || (c < b && a < c);}
 
 //refreshes buffer
 void macOSRefreshBuffer(NSWindow *Window) {
@@ -207,7 +188,7 @@ internal void clearScreen() {
 }
 
 internal double boundedMin(double nums[], int n, double lowBound) {
-	double min = std::numeric_limits<double>::max();
+	double min = numeric_limits<double>::max();
 	for(int i = 0; i < n; i++) {
 		min = nums[i] < min && nums[i] >= lowBound ? nums[i] : min;
 	}
@@ -216,8 +197,8 @@ internal double boundedMin(double nums[], int n, double lowBound) {
 }
 
 internal double bounded2Min(double nums[], int n, double lowBound) {
-	double min = std::numeric_limits<double>::max();
-	double min2 = std::numeric_limits<double>::max();
+	double min = numeric_limits<double>::max();
+	double min2 = numeric_limits<double>::max();
 	for(int i = 0; i < n; i++) {
 		if (nums[i] < min && nums[i] >= lowBound) {
 			min2 = min;
@@ -230,18 +211,18 @@ internal double bounded2Min(double nums[], int n, double lowBound) {
 }
 
 internal void flatBottomTriangle(Position p1, Position p2, Position p3, Color c) {
-	if (p1.posY < p2.posY) {Position temp = p1; p1 = p2; p2 = temp;}
-	if (p1.posY < p3.posY) {Position temp = p1; p1 = p3; p3 = temp;}
-	if (p2.posX > p3.posX) {Position temp = p2; p2 = p3; p3 = temp;}
-	double yMax = p1.posY;
+	if (p1.y < p2.y) {Position temp = p1; p1 = p2; p2 = temp;}
+	if (p1.y < p3.y) {Position temp = p1; p1 = p3; p3 = temp;}
+	if (p2.x > p3.x) {Position temp = p2; p2 = p3; p3 = temp;}
+	double yMax = p1.y;
 	double closeSlope = Position::slope(p1, p2);
 	double farSlope = Position::slope(p1, p3);
 
 	uint8_t *row = (uint8_t *)buffer;
 	row += pitch * (int)yMax;
-	for(int curY = yMax; curY >= p2.posY; curY--) {
-		int startX = (int) ((curY - p1.posY) / closeSlope + p1.posX);
-		int endX = (int) ((curY - p1.posY) / farSlope + p1.posX);
+	for(int curY = yMax; curY >= p2.y; curY--) {
+		int startX = (int) ((curY - p1.y) / closeSlope + p1.x);
+		int endX = (int) ((curY - p1.y) / farSlope + p1.x);
 		uint8_t *pixelChannel = (uint8_t *)row;
 		pixelChannel += max(startX, 0)*4;
 		for(int curX = startX; curX <= endX; curX++) {
@@ -252,18 +233,18 @@ internal void flatBottomTriangle(Position p1, Position p2, Position p3, Color c)
 }
 
 internal void flatTopTriangle(Position p1, Position p2, Position p3, Color c) {
-	if (p1.posY > p2.posY) {Position temp = p1; p1 = p2; p2 = temp;}
-	if (p1.posY > p3.posY) {Position temp = p1; p1 = p3; p3 = temp;}
-	if (p2.posX > p3.posX) {Position temp = p2; p2 = p3; p3 = temp;}
-	double yMin = p1.posY;
+	if (p1.y > p2.y) {Position temp = p1; p1 = p2; p2 = temp;}
+	if (p1.y > p3.y) {Position temp = p1; p1 = p3; p3 = temp;}
+	if (p2.x > p3.x) {Position temp = p2; p2 = p3; p3 = temp;}
+	double yMin = p1.y;
 	double closeSlope = Position::slope(p1, p2);
 	double farSlope = Position::slope(p1, p3);
 
 	uint8_t *row = (uint8_t *)buffer;
 	row += pitch * (int)yMin;
-	for(int curY = yMin; curY <= p2.posY; curY++) {
-		int startX = (int) ((curY - p1.posY) / closeSlope + p1.posX);
-		int endX = (int) ((curY - p1.posY) / farSlope + p1.posX);
+	for(int curY = yMin; curY <= p2.y; curY++) {
+		int startX = (int) ((curY - p1.y) / closeSlope + p1.x);
+		int endX = (int) ((curY - p1.y) / farSlope + p1.x);
 		uint8_t *pixelChannel = (uint8_t *)row;
 		pixelChannel += max(startX, 0)*4;
 		for(int curX = startX; curX <= endX; curX++) {
@@ -274,138 +255,14 @@ internal void flatTopTriangle(Position p1, Position p2, Position p3, Color c) {
 }
 
 internal void drawTriangle(Position p1, Position p2, Position p3, Color c) {
-	if (p2.posY < p3.posY) {Position temp = p2; p2 = p3; p3 = temp;}
-	if (p1.posY > p2.posY) {Position temp = p1; p1 = p2; p2 = temp;}
-	if (p1.posY < p3.posY) {Position temp = p1; p1 = p3; p3 = temp;}
+	if (p2.y < p3.y) {Position temp = p2; p2 = p3; p3 = temp;}
+	if (p1.y > p2.y) {Position temp = p1; p1 = p2; p2 = temp;}
+	if (p1.y < p3.y) {Position temp = p1; p1 = p3; p3 = temp;}
 	double slope = Position::slope(p2, p3);
 
-	Position point = {(p1.posY - p2.posY) / slope + p2.posX, p1.posY};
+	Position point = {(p1.y - p2.y) / slope + p2.x, p1.y};
 	flatTopTriangle(p1, p3, point, Red);
 	flatBottomTriangle(p1, p2, point, Red);
-}
-
-// regular polygon
-struct RegNgon {
-	Position center;
-	double radius;
-	int sides;
-	Color color;
-	double rpm;
-	double maxHP;
-	double curHP;
-
-	void draw() {
-		Position last = {center.posX + radius, center.posY};
-		double step = TWO_PI/sides;
-		for(double theta = step; theta < TWO_PI + step; theta += step) {
-			Position next = {center.posX + radius * cos(theta), center.posY + radius * sin(theta)};
-			drawTriangle(center, last, next, color);
-			last = next;
-		}
-	}
-
-	void drawRotating() {
-		Position last = {center.posX + (double)radius * cos(frames/(600.0/rpm)), center.posY + (double)radius * sin(frames/(600.0/rpm))};
-		double step = TWO_PI/sides;
-		double offset = step + atan2((last.posY-center.posY), (last.posX-center.posX));
-		for(double theta = offset; theta < TWO_PI + offset; theta += step) {
-			Position next = {center.posX + radius * cos(theta), center.posY + radius * sin(theta)};
-			drawTriangle(center, last, next, color);
-			last = next;
-		}
-	}
-};
-
-
-struct ConvexNgon{
-	int sides;
-	Position *points;
-	Color color;
-	double rpm;
-	Position center;
-	double maxHP = 1;
-	double curHP = 1;
-
-
-	ConvexNgon(int s, Position p[], Color c, double r, double max, double cur) {
-		sides = s;
-		points = p;
-		color = c;
-		rpm = r;
-		maxHP = max;
-		curHP = cur;
-		double xPos = 0;
-		double yPos = 0;
-		for(int n = 0; n < sides; n++) {
-			xPos += p[n].posX;
-			yPos += p[n].posY;
-		}
-		center = {xPos/sides, yPos/sides};
-	}
-
-	ConvexNgon(int s, Position p[], Color c, double r) {
-		sides = s;
-		points = p;
-		color = c;
-		rpm = r;
-		double xPos = 0;
-		double yPos = 0;
-		for(int n = 0; n < sides; n++) {
-			xPos += p[n].posX;
-			yPos += p[n].posY;
-		}
-		center = {xPos/sides, yPos/sides};
-	}
-
-	void draw() {
-		if(maxHP == curHP) {
-			for(int n = 0; n < sides-1; n++) {
-				drawTriangle(center, points[n], points[n+1], color);
-			} drawTriangle(center, points[0], points[sides-1], color);
-		} else { 
-			for(int n = 0; n < sides-1; n++) {
-				drawTriangle(points[n], points[n+1], Position{(points[n].posX-center.posX)*curHP/maxHP+center.posX, (points[n].posY-center.posY)*curHP/maxHP+center.posY}, color);
-				drawTriangle(points[n+1], Position{(points[n].posX-center.posX)*curHP/maxHP+center.posX, (points[n].posY-center.posY)*curHP/maxHP+center.posY}, Position{(points[n+1].posX-center.posX)*curHP/maxHP+center.posX, (points[n+1].posY-center.posY)*curHP/maxHP+center.posY}, color);
-				/*Position a[] = {points[n], points[n+1], Position{(points[n].posX-center.posX)*curHP/maxHP+center.posX, (points[n].posY-center.posY)*curHP/maxHP+center.posY}, Position{(points[n+1].posX-center.posX)*curHP/maxHP+center.posX, (points[n+1].posY-center.posY)*curHP/maxHP+center.posY}};
-				//TODO TODO TODO mqthy math math math
-				ConcvexNgon{4, a, color, rpm}.draw();*/
-			}
-				drawTriangle(points[0], points[sides-1], Position{(points[0].posX-center.posX)*curHP/maxHP+center.posX, (points[0].posY-center.posY)*curHP/maxHP+center.posY}, color);
-				drawTriangle(points[sides-1], Position{(points[0].posX-center.posX)*curHP/maxHP+center.posX, (points[0].posY-center.posY)*curHP/maxHP+center.posY}, Position{(points[sides-1].posX-center.posX)*curHP/maxHP+center.posX, (points[sides-1].posY-center.posY)*curHP/maxHP+center.posY}, color);
-		}
-	}
-/*
-	void drawRotating() {
-		Position last = {center.posX + (double)radius * cos(frames/(600.0/rpm)), center.posY + (double)radius * sin(frames/(600.0/rpm))};
-		double step = TWO_PI/sides;
-		double offset = step + atan2((last.posY-center.posY), (last.posX-center.posX));
-		for(double theta = offset; theta < TWO_PI + offset; theta += step) {
-			Position next = {center.posX + radius * cos(theta), center.posY + radius * sin(theta)};
-			drawTriangle(center, last, next, color);
-			last = next;
-		}
-	}*/
-};
-
-internal void drawRotatingNgon(Position center, int radius, int sides, Color c, double rpm) {
-	Position last = {center.posX + (double)radius * cos(frames/(600.0/rpm)), center.posY + (double)radius * sin(frames/(600.0/rpm))};
-	double step = TWO_PI/sides;
-    double offset = step + atan2((last.posY-center.posY), (last.posX-center.posX));
-	for(double theta = offset; theta < TWO_PI + offset; theta += step) {
-		Position next = {center.posX + radius * cos(theta), center.posY + radius * sin(theta)};
-		drawTriangle(center, last, next, c);
-		last = next;
-	}
-}
-
-internal void drawNgon(Position center, int radius, int n, Color c) {
-	Position last = {center.posX + radius, center.posY};
-	double step = TWO_PI/n;
-	for(double theta = step; theta < TWO_PI + step; theta += step) {
-		Position next = {center.posX + radius * cos(theta), center.posY + radius * sin(theta)};
-		drawTriangle(center, last, next, c);
-		last = next;
-	}
 }
 
 // draws a circle ... wow
@@ -413,8 +270,8 @@ internal void drawCircle(Position p, int r, Color c) {
 	int width = bitmapWidth;
 	int height = bitmapHeight;
 	uint8_t *row = (uint8_t *)buffer;
-	int posY = (int)p.posY;
-	int posX = (int)p.posX;
+	int posY = (int)p.y;
+	int posX = (int)p.x;
 	int rr = r*r;
 
 	row += max(posY-r, 0) * pitch;
@@ -440,8 +297,8 @@ internal void drawCircle(Position p, int r, Color c) {
 }
 
 internal void drawCircleOutline(Position p, int r, Color c) {
-	int posY = (int)p.posY;
- 	int posX = (int)p.posX;
+	int posY = (int)p.y;
+ 	int posX = (int)p.x;
 	int con = 2*r*r-1;
 	int x = r;
 	int y = 0;
@@ -515,16 +372,15 @@ internal void drawCircleOutline(Position p, int r, Color c) {
 
 		}
 }
+
 // draws a circle except with hole depending on currenthealth
-internal void drawTurret(Turret t) {
+internal void drawCircleWithHole(Position center, double radius, Color color, int currentHealth, int maxHealth) {
 	int width = bitmapWidth;
 	int height = bitmapHeight;
 	uint8_t *row = (uint8_t *)buffer;
-	int posY = (int)t.position.posY;
-	int posX = (int)t.position.posX;
-	int radius = t.radius;
+	int posY = (int)center.y;
+	int posX = (int)center.x;
 	int r2 = radius * radius;
-	Color color = t.color;
 
 	row += max(posY-radius, 0) * pitch;
 	for(int y = max(posY-radius, 0); y < min(posY+radius, height); ++y) {
@@ -536,7 +392,7 @@ internal void drawTurret(Turret t) {
 			//Red
 			double length = Position(posX-x, posY-y).length();
 			double l2 = (posX-x)*(posX-x) + (posY-y) * (posY - y);
-			double holeRadius = (t.maxHealth-t.currentHealth)/(double)t.maxHealth * radius;
+			double holeRadius = (maxHealth-currentHealth)/(double)maxHealth * radius;
 			if (l2 <= r2 && l2 >= holeRadius * holeRadius) {
 
 				memcpy(pixelChannel, &color, sizeof(Color));
@@ -552,9 +408,297 @@ internal void drawTurret(Turret t) {
 	}   
 }
 
-// draws a bullet
-internal void drawBullet(Bullet b) {
-	drawCircle(b.position, b.radius, TeamColors[b.team]); }
+const uint16 CIRCLE_SHAPE = 0;
+const uint16 RECTANGLE_SHAPE = 1;
+const uint16 REGULAR_POLYGON_SHAPE = 2;
+const uint16 CONVEX_POLYGON_SHAPE = 3;
+
+struct Shape {
+
+	//UNIVERSAL
+	uint16 SHAPE_CODE;
+	Position center;
+	Color color;
+
+	//CIRCLE ONLY
+	double radius;
+
+	//POLYGON ONLY
+	Position *positions;
+	int sides;
+
+	Shape() {};
+
+	Shape(Position center, double radius, Color color) {
+		this-> SHAPE_CODE = CIRCLE_SHAPE;
+		this-> center = center;
+		this-> radius = radius;
+		this-> color = color;
+	}
+
+	Shape(Position p1, Position p2, Color color) {
+		this-> SHAPE_CODE = RECTANGLE_SHAPE;
+		Position pos[] = {p1, Position(p1.x, p2.y), p2, Position(p2.x, p1.y)};
+		this-> center = Position((p1.x + p2.x)/2.0, (p1.y + p2.y)/2.0);
+		this-> positions = pos;
+		this-> sides = 4;
+		this-> color = color;
+	}
+
+	Shape(int sides, Position *positions, Color color) {
+		this-> SHAPE_CODE = CONVEX_POLYGON_SHAPE;
+		this-> positions = positions;
+		this-> color = color;
+		this-> sides = sides;
+		double xPos = 0;
+		double yPos = 0;
+		for(int n = 0; n < sides; n++) {
+			xPos += positions[n].x;
+			yPos += positions[n].y;
+		}
+		this-> center = {xPos/sides, yPos/sides};
+	}
+
+	void draw() {
+		if (SHAPE_CODE == CIRCLE_SHAPE) {
+			drawCircle(center, radius, color);
+		}
+		else {
+			for(int n = 0; n < sides-1; n++) {
+					drawTriangle(center, positions[n], positions[n+1], color);
+			} drawTriangle(center, positions[0], positions[sides-1], color);
+		}
+	}
+
+	void draw(int currentHealth, int maxHealth) {
+		if (currentHealth == 0) {
+			return;
+		}
+		if (SHAPE_CODE == CIRCLE_SHAPE) {
+			drawCircleWithHole(center, radius, color, currentHealth, maxHealth);
+		}
+		else { 
+				//TODO: fix this in the actual logic;
+				currentHealth = maxHealth - currentHealth;
+				for(int n = 0; n < sides-1; n++) {
+					drawTriangle(positions[n], positions[n+1], Position{(positions[n].x-center.x)*currentHealth/maxHealth+center.x, (positions[n].y-center.y)*currentHealth/maxHealth+center.y}, color);
+					drawTriangle(positions[n+1], Position{(positions[n].x-center.x)*currentHealth/maxHealth+center.x, (positions[n].y-center.y)*currentHealth/maxHealth+center.y}, Position{(positions[n+1].x-center.x)*currentHealth/maxHealth+center.x, (positions[n+1].y-center.y)*currentHealth/maxHealth+center.y}, color);
+					//Position a[] = {positions[n], positions[n+1], Position{(positions[n].x-center.x)*curHP/maxHP+center.x, (positions[n].y-center.y)*curHP/maxHP+center.y}, Position{(positions[n+1].x-center.x)*curHP/maxHP+center.x, (positions[n+1].y-center.y)*curHP/maxHP+center.y}};
+					//TODO TODO TODO mqthy math math math
+					//ConvexNgon{4, a, color, rpm}.draw();
+				}
+				drawTriangle(positions[0], positions[sides-1], Position{(positions[0].x-center.x)*currentHealth/maxHealth+center.x, (positions[0].y-center.y)*currentHealth/maxHealth+center.y}, color);
+				drawTriangle(positions[sides-1], Position{(positions[0].x-center.x)*currentHealth/maxHealth+center.x, (positions[0].y-center.y)*currentHealth/maxHealth+center.y}, Position{(positions[sides-1].x-center.x)*currentHealth/maxHealth+center.x, (positions[sides-1].y-center.y)*currentHealth/maxHealth+center.y}, color);
+		}
+	}
+
+	bool touch(Position pos) {
+
+		if (SHAPE_CODE == CIRCLE_SHAPE) {
+			return (center.x - pos.x) * (center.x - pos.x) + (center.y - pos.y) * (center.y - pos.y) <= radius * radius;
+		}
+		else {
+			int intersectCount = 0;
+			Position a = positions[sides-1];
+
+			// (y - y1) = m(x - x1)
+			for (int n = 0; n < sides; n++) {
+				Position b = positions[n];
+				if (a.y == b.y) {
+					if (pos.y == a.y && unorderedBetween(a.x, pos.x, b.x)) {
+						intersectCount++;
+					}
+					continue;
+				}
+				if (a.x == b.x) {
+					if (pos.x == a.x && unorderedBetween(a.y, pos.y, b.y)) {
+						intersectCount++;
+					}
+					continue;
+				}
+				double slope = Position::slope(a, positions[n]);
+				double intersectX = (pos.y - a.y) / slope + a.x;
+				if (unorderedBetween(a.x, intersectX, b.x)) {
+					intersectCount++;
+					continue;
+				}
+			}
+
+			return intersectCount % 2;
+		}
+	}
+};
+
+static Shape Circle(Position position, double radius, Color color) {
+	return Shape(position, radius, color);
+}
+
+static Shape ConvexPolygon(int sides, Position *positions, Color color) {
+	return Shape(sides, positions, color);
+}
+
+static Shape Rectangle(Position a, Position b, Color color) {
+	return Shape(a, b, color);
+}
+
+struct Thing {
+
+	//UNIVERSAL
+	uint16 THING_CODE;
+	Shape shape;
+
+	//TURRET AND BULLET
+	int team;
+
+	//TURRET ONLY
+	int cooldown;
+	int currentHealth = 1;
+	int maxHealth = 1;
+	int framesSinceFired;
+
+	//BULLET ONLY
+	Position velocity;
+	bool alive;
+
+	Thing() {};
+
+	Thing(int team, Shape shape, int cooldown, int currentHealth, int maxHealth, int framesSinceFired) {
+		this-> THING_CODE = TURRET_THING;
+		this-> team = team;
+		this-> shape = shape;
+		this-> cooldown = cooldown;
+		this-> currentHealth = currentHealth;
+		this-> maxHealth = maxHealth;
+		this-> framesSinceFired = framesSinceFired;
+	}
+
+	Thing(Shape shape, Position velocity, int team, bool alive) {
+		this-> THING_CODE = BULLET_THING;
+		this-> shape = shape;
+		this-> velocity = velocity;
+		this-> team = team;
+		this-> alive = alive;
+		this-> shape.color = TeamColors[team];
+	}
+
+	Thing(Shape shape) {
+		this-> THING_CODE = OBJECT_THING;
+		this-> shape = shape;
+	}
+
+	void draw() {
+		if (currentHealth == 0) {
+			return;
+		}
+		else {
+			if(maxHealth == currentHealth) {
+				shape.draw();
+			} else { 
+				shape.draw(currentHealth, maxHealth);
+			}
+		}
+	}
+};
+
+static Thing Turret(int team, Shape shape, int cooldown, int currentHealth, int maxHealth, int framesSinceFired) {
+	return Thing(team, shape, cooldown, currentHealth, maxHealth, framesSinceFired);
+}
+
+static Thing Bullet(Shape shape, Position velocity, int team) {
+	return Thing(shape, velocity, team, true);
+}
+
+static Thing Bullet() {
+	return Thing(Shape(), Position(), -1, false);
+}
+
+// regular polygon
+struct RegNgon {
+	Position center;
+	double radius;
+	int sides;
+	Color color;
+	double rpm;
+	double maxHP = 1;
+	double curHP = 1;
+
+	RegNgon(Position cen, double rad, int s, Color c, double r) {
+		center = cen;
+		radius = rad;
+		sides = s;
+		color = c;
+		rpm = r;
+	}
+
+	void draw() {
+		Position last = {center.x + radius, center.y};
+		double step = TWO_PI/sides;
+		for(double theta = step; theta < TWO_PI + step; theta += step) {
+			Position next = {center.x + radius * cos(theta), center.y + radius * sin(theta)};
+			drawTriangle(center, last, next, color);
+			last = next;
+		}
+	}
+
+	void drawRotating() {
+		Position last = {center.x + (double)radius * cos(frames/(600.0/rpm)), center.y + (double)radius * sin(frames/(600.0/rpm))};
+		double step = TWO_PI/sides;
+		double offset = step + atan2((last.y-center.y), (last.x-center.x));
+		for(double theta = offset; theta < TWO_PI + offset; theta += step) {
+			Position next = {center.x + radius * cos(theta), center.y + radius * sin(theta)};
+			drawTriangle(center, last, next, color);
+			last = next;
+		}
+	}
+};
+
+
+
+/*
+	void drawRotating() {
+		Position last = {center.x + (double)radius * cos(frames/(600.0/rpm)), center.y + (double)radius * sin(frames/(600.0/rpm))};
+		double step = TWO_PI/sides;
+		double offset = step + atan2((last.y-center.y), (last.x-center.x));
+		for(double theta = offset; theta < TWO_PI + offset; theta += step) {
+			Position next = {center.x + radius * cos(theta), center.y + radius * sin(theta)};
+			drawTriangle(center, last, next, color);
+			last = next;
+		}
+	}*/
+
+
+internal void drawRotatingNgon(Position center, int radius, int sides, Color c, double rpm) {
+	Position last = {center.x + (double)radius * cos(frames/(600.0/rpm)), center.y + (double)radius * sin(frames/(600.0/rpm))};
+	double step = TWO_PI/sides;
+    double offset = step + atan2((last.y-center.y), (last.x-center.x));
+	for(double theta = offset; theta < TWO_PI + offset; theta += step) {
+		Position next = {center.x + radius * cos(theta), center.y + radius * sin(theta)};
+		drawTriangle(center, last, next, c);
+		last = next;
+	}
+}
+
+internal void drawNgon(Position center, int radius, int n, Color c) {
+	Position last = {center.x + radius, center.y};
+	double step = TWO_PI/n;
+	for(double theta = step; theta < TWO_PI + step; theta += step) {
+		Position next = {center.x + radius * cos(theta), center.y + radius * sin(theta)};
+		drawTriangle(center, last, next, c);
+		last = next;
+	}
+}
+
+
+Thing player;
+Thing bullets[1024];
+Thing turrets[numTurrets];
+
+bool circleTouch(Position p1, int r1, Position p2, int r2) {
+	return (p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y) <= (r1 + r2) * (r1 + r2);}
+bool circleTouch(Shape a, Shape b) {
+	return circleTouch(a.center, a.radius, b.center, b.radius);}
+bool circleTouch(Thing a, Thing b) {
+	return circleTouch(a.shape, b.shape);}
 
 // incase of window resize
 void macOSRedrawBuffer(NSWindow *Window) {
@@ -600,17 +744,18 @@ void startup() {
 		player.currentHealth ++;
 		player.maxHealth++;
 	}
-	else player = {Position(512, 380), 10, Blue, TeamPlayer, 32, 1, 1};
-	for (Turret &t: turrets) {
-		t = { Position(rand() % (GlobalRenderingWidth-50) +25, rand() % (GlobalRenderingHeight-50)+25), 20, Red, 1, 30, 10, 10 };
+	else player = Turret(TeamPlayer, Circle(Position(512, 380), 10.0, Blue), 32, 10, 10, 10);
+	for (Thing &t: turrets) {
+		t.currentHealth = t.maxHealth;
+		// = { Position(rand() % (GlobalRenderingWidth-50) +25, rand() % (GlobalRenderingHeight-50)+25), 20, Red, 1, 30, 10, 10 };
 	}
 }
 
 //fire bullet
-void fireBullet(Turret source, Position target) {
-	for (Bullet &b: bullets) {
+void fireBullet(Thing source, Position target) {
+	for (Thing &b: bullets) {
 		if (!b.alive) {
-			b = { source.position, 5, Position::unitVector(source.position, target).mul(gameSpeed), source.team};
+			b = Bullet(Circle(source.shape.center, 5, TeamColors[source.team]), Position::unitVector(source.shape.center, target).mul(gameSpeed), source.team);
 			return;
 		}
 	}	
@@ -618,20 +763,20 @@ void fireBullet(Turret source, Position target) {
 
 //bullet updates
 void simulateBullets() { 
-	for (Bullet &b: bullets) {
+	for (Thing &b: bullets) {
 		if (b.alive) {
-			if (between(0-b.radius, b.position.posX, bitmapWidth+b.radius) && between(0-b.radius, b.position.posY, bitmapHeight+b.radius)) {
+			if (between(0-b.shape.radius, b.shape.center.x, bitmapWidth+b.shape.radius) && between(0-b.shape.radius, b.shape.center.y, bitmapHeight+b.shape.radius)) {
 				if (b.team != player.team && circleTouch(b, player)) {
 					player.currentHealth--;
 					b.alive = false;}
-				for (Turret &t: turrets) {
+				for (Thing &t: turrets) {
 					if (t.currentHealth > 0 && b.team != t.team && circleTouch(b, t)) {
 						b.alive = false;
 						t.currentHealth--;
 					}
 				}
-				drawBullet(b);
-				b.position = Position::add(b.position, b.velocity);
+				b.draw();
+				b.shape.center = Position::add(b.shape.center, b.velocity);
 			}
 			else {
 				b.alive = false; }
@@ -639,13 +784,72 @@ void simulateBullets() {
 	}
 }
 
+Thing *selected;
+Position offset;
+Shape radiusCircle;
+
+Thing* getSelected() {
+	//NSLog(@"%f, %f", player.shape.center.x, mousePos.x); 
+	//NSLog(@"%f, %f", player.shape.center.y - player.radius, mousePos.y); //Position::distance(mousePos, selected -> position - Position{0, static_cast<double>(selected -> shape.radius)}));
+	if (selected && radiusCircle.touch(mousePos)) {
+		NSLog(@"wow");
+		return selected;
+	}
+	for (Thing &t: turrets) {
+		if (t.shape.touch(mousePos)) {
+			return &t;
+		}}
+	if (player.shape.touch(mousePos)) {
+		return &player;
+	}
+	return nullptr;
+}
+
+uint16 curUse;
+
+void editor() {
+	for (Thing t: turrets) {
+		t.currentHealth = t.maxHealth;
+		t.draw();}
+	player.draw();
+
+	if (click) {
+		curUse = 0;
+		selected = getSelected();
+		if(selected) {
+			offset = selected -> shape.center - mousePos;
+		}
+		NSLog(@"%f", offset.y);
+	}
+
+	if (selected) {
+		radiusCircle = Circle(selected -> shape.center - Position{0, static_cast<double>(selected -> shape.radius)}, 3, Green);
+		radiusCircle.draw();
+		if (leftMouseButtonDown) {
+			if (curUse == 1 || (curUse == 0 && radiusCircle.touch(mousePos))) {
+				NSLog(@"wow %f      %f \n %f       %f", mousePos.y, selected -> shape.center.y, selected -> shape.radius, offset.y);
+				selected -> shape.radius = selected -> shape.center.y - mousePos.y;
+				curUse = 1;
+			}
+			else {
+				selected -> shape.center = mousePos + offset;
+				curUse = 2;
+			}
+
+			//NSLog(@"this should work");
+		}
+	}
+	//selected.color = Red;
+
+}
+
 // turret updates
 void simulateTurrets() {
-	for (Turret &t: turrets) {
+	for (Thing &t: turrets) {
 		if (t.currentHealth > 0){
-			drawTurret(t);
+			t.draw();
 			if (t.framesSinceFired++ > t.cooldown) {
-				fireBullet(t, player.position);
+				fireBullet(t, player.shape.center);
 				t.framesSinceFired = 0;}
 		}
 	}
@@ -654,7 +858,7 @@ void simulateTurrets() {
 // checks to see if need reset
 void checkGameState() {
 	if (player.currentHealth <= 0) startup();
-	for (Turret &t: turrets) {
+	for (Thing &t: turrets) {
 		if (t.currentHealth > 0) { return; }}
 	startup();
 }
@@ -673,11 +877,20 @@ macGetSecondsElapsed(mach_timebase_info_data_t *timeBase,
 void game() {
 	simulateBullets();
 	simulateTurrets();
-	drawTurret(player);
+	player.draw();
+	if (click || leftMouseButtonDown) {
+		fireBullet(player, mousePos);
+	}
 	checkGameState();
 }
 
 int main(int args, const char * argv[]) {
+	player = Turret(TeamPlayer, Circle(Position(512, 380), 10.0, Blue), 32, 10, 10, 10);
+	for (Thing &t: turrets) {
+		Position p = Position(rand() % (GlobalRenderingWidth-50) +25, rand() % (GlobalRenderingHeight-50)+25);
+		t = Turret(TeamEnemy, Circle(p, 20.0, Red), 30, 10, 10, 0);
+	}
+
 
     TwinMainWindowDelegate *MainWindowDelegate = [[TwinMainWindowDelegate alloc] init];
        
@@ -718,7 +931,10 @@ int main(int args, const char * argv[]) {
 	//main run loop
 	while (Running) {
 
-		NSEvent* event;	
+		click = false;
+
+		NSEvent* event;
+		leftMouseButtonDown = false;	
     
 	    do {
 			//checks event list for key and mouse events
@@ -732,6 +948,8 @@ int main(int args, const char * argv[]) {
 					if (event.keyCode == aKeyCode) { KeyboardController.aKeyState = true; }
 					if (event.keyCode == sKeyCode) { KeyboardController.sKeyState = true; }
 					if (event.keyCode == dKeyCode) { KeyboardController.dKeyState = true; }
+					if (event.keyCode == eKeyCode) { KeyboardController.eKeyState = !KeyboardController.eKeyState; 
+						selected = nullptr;}
 					if (event.keyCode == qKeyCode) { Running = false;}
 					[NSApp sendEvent: event];
 					break;
@@ -740,52 +958,80 @@ int main(int args, const char * argv[]) {
 					if (event.keyCode == aKeyCode) { KeyboardController.aKeyState = false; }
 					if (event.keyCode == sKeyCode) { KeyboardController.sKeyState = false; }
 					if (event.keyCode == dKeyCode) { KeyboardController.dKeyState = false; }
+
 					[NSApp sendEvent: event];
 					break;
 				case NSEventTypeLeftMouseDown:
                     mousePos = { event.locationInWindow.x, -(event.locationInWindow.y-760) };
-					fireBullet(player, mousePos);
+					click = true;
+					//NSLog(@"down");
+					break;
+				case NSEventTypeLeftMouseDragged:
+                    mousePos = { event.locationInWindow.x, -(event.locationInWindow.y-760) };
 					break;
 				default:
 					[NSApp sendEvent: event];
+				NSUInteger mouseButtonMask = [NSEvent pressedMouseButtons];
+				if(!leftMouseButtonDown) {
+					leftMouseButtonDown = (mouseButtonMask & (1 << 0)) != 0;}
+
+
+				// TODO: actually get mouse holding to work
+				/*if (leftMouseButtonDown) {
+					if (!((mousePos.x == 0 && mousePos.y == 760) || (mousePos.x == 0 && mousePos.y == 0))) {
+						mousePos = { event.locationInWindow.x, -(event.locationInWindow.y-760) }; }
+
+					NSLog(@"mouse x: %f \n mouse y: %f", mousePos.x, mousePos.y);
+					fireBullet(player, mousePos);
+				}  */
+
+
+
 			}	
 		} while (event != nil);
-		
+						if (leftMouseButtonDown) {
+					//NSLog(@"mouse down");
+				}
+
 		// upadtes player position based on buttons pressed	
 		Position playerV = { 0, 0 };	
-        if (GameController->wKeyState == true) {playerV.posY-=10;}
-        if (GameController->sKeyState == true) {playerV.posY+=10;}
-        if (GameController->aKeyState == true) {playerV.posX-=10;}
-        if (GameController->dKeyState == true) {playerV.posX+=10;}
+        if (GameController->wKeyState == true) {playerV.y-=10;}
+        if (GameController->sKeyState == true) {playerV.y+=10;}
+        if (GameController->aKeyState == true) {playerV.x-=10;}
+        if (GameController->dKeyState == true) {playerV.x+=10;}
 		if (playerV.length() != 0)
-			player.position.add( { playerV.unitVector().posX * gameSpeed,  playerV.unitVector().posY * gameSpeed});
-		player.position.posX = min(player.position.posX, bitmapWidth);
-		player.position.posX = max(player.position.posX, 0);
-		player.position.posY = min(player.position.posY, bitmapHeight);
-		player.position.posY = max(player.position.posY, 0);
+			player.shape.center.add( { playerV.unitVector().x * gameSpeed,  playerV.unitVector().y * gameSpeed});
+		player.shape.center.x = min(player.shape.center.x, bitmapWidth);
+		player.shape.center.x = max(player.shape.center.x, 0);
+		player.shape.center.y = min(player.shape.center.y, bitmapHeight);
+		player.shape.center.y = max(player.shape.center.y, 0);
 
 		//updating game objects
 		clearScreen();
 
-		Position b[] = {Position{200, 200}, Position{200, 100}, Position{100, 100}, Position{100, 200}};
-		Position a[] = {Position{200, 200}, Position{100, 100}, Position{300, 100}};
-		ConvexNgon{4, b, Red, 60, 10, 9}.draw();
-		RegNgon{Position{512, 100}, 50, 6, Blue, 10}.drawRotating();	
-		drawRotatingNgon(Position{512, 200}, 50, 6, Red, -10);	
 		//flatBottomTriangle(Position{200, 200}, Position{100, 100}, Position{300, 100}, Red);
 		//flatTopTriangle(Position{200, 200}, Position{100, 300}, Position{300, 300}, Red);
 		//drawTriangle(Position{200, 200}, Position{300, 150}, Position{100, 100}, Red);
-		game();
+		Position b[] = {Position{200, 200}, Position{200, 100}, Position{100, 100}, Position{100, 200}};
+		Position a[] = {Position{200, 200}, Position{100, 100}, Position{300, 100}};
+		ConvexPolygon(4, b, Red).draw(abs(sin(frames/(600.0/30))*100), 100);
+		NSLog(@"%f", abs(sin(frames/(600.0/30))));
+		if (GameController -> eKeyState) {
+			editor();
+		}
+		else {
+			game();
+		}
 
 		uint64_t counter1 = mach_absolute_time();
 		//drawNgon(Position{512, 370}, 50, 40, Red);
 		uint64_t counter2 = mach_absolute_time();
-		NSLog(@"Fast?? Circle: %llu", (counter2-counter1));
+		//NSLog(@"Fast?? Circle: %llu", (counter2-counter1));
 
 		uint64_t counter3 = mach_absolute_time();
 		//drawTurret( Turret{Position{312, 370}, 50, Red, 1, 40, 5, 10, 200});
 		uint64_t counter4 = mach_absolute_time();
-		NSLog(@"Normal Circle: %llu", (counter4 - counter3));
+		//NSLog(@"Normal Circle: %llu", (counter4 - counter3));
 	
 		
 
@@ -820,7 +1066,7 @@ int main(int args, const char * argv[]) {
         real32 secondsPerFrame = (real32)nanosecondsPerFrame * 1.0E-9;
         real32 framesPerSecond = 1 / secondsPerFrame;
 
-        NSLog(@"Frames Per Second: %f", framesPerSecond);
+        //NSLog(@"Frames Per Second: %f", framesPerSecond);
 
 		frames++;
         lastCounter = mach_absolute_time();
