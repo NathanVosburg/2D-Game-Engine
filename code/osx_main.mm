@@ -14,6 +14,12 @@
 #include <mach/mach_init.h>
 #include <mach/mach_time.h>
 #include <mach-o/dyld.h>
+#include <assert.h>
+
+#define ASSERT(b) do { if (!(b)) { \
+    NSLog(@"ASSERT Line %d in %s\n", __LINE__, __FILE__); \
+} } while (0)
+#define STATIC_ASSERT(cond) static_assert(cond, "STATIC_ASSERT");
 
 using namespace std;
 
@@ -22,6 +28,7 @@ using namespace std;
 #define global_variable static
 
 const int numTurrets = 4;
+const int numObjects = 1;
 const double gameSpeed = 7.0;
 const double PI = 3.14159265358979323846;
 const double TWO_PI = 6.28318530718;
@@ -43,20 +50,58 @@ global_variable int GlobalRenderingHeight = 768;
 global_variable uint8_t *buffer;
 global_variable bool Running = true;
 
-struct mac_game_controller
-{
-    bool wKeyState;
-    bool aKeyState;
-    bool sKeyState;
-    bool dKeyState;
-	bool eKeyState;
-    float mouseX;
-    float mouseY;
-};
-
 uint16 OBJECT_THING = 0;
 uint16 TURRET_THING = 1;
 uint16 BULLET_THING = 2;
+
+template <typename T> struct StretchyBuffer {
+    int length;
+    int _capacity;
+    T *data;
+
+    T &operator [](int index) { return data[index]; }
+};
+
+template <typename T> void sbuff_push_back(StretchyBuffer<T> *buffer, T element) {
+    if (buffer->_capacity == 0) {
+        ASSERT(!buffer->data);
+        ASSERT(buffer->length == 0);
+        buffer->_capacity = 16;
+        buffer->data = (T *) malloc(buffer->_capacity * sizeof(T));
+    }
+    if (buffer->length == buffer->_capacity) {
+        buffer->_capacity *= 2;
+        buffer->data = (T *) realloc(buffer->data, buffer->_capacity * sizeof(T));
+    }
+
+	NSLog(@"%d", buffer->length);
+	NSLog(@"%d", buffer->_capacity);
+
+	element = element;
+	
+    buffer->data[buffer->length++] = element;
+}
+
+template <typename T> void sbuff_free(StretchyBuffer<T> *buffer) {
+    if (buffer->data) {
+        free(buffer->data);
+    }
+    *buffer = {};
+}
+
+template <typename T> void sbuff_insert(StretchyBuffer<T> *buffer, int i, T element) {
+    sbuff_push_back(buffer, element); // shrug-emoji
+    memmove(buffer->data + i + 1, buffer->data + i, (buffer->length - i) * sizeof(T));
+    buffer->data[i] = element;
+}
+
+template <typename T> void sbuff_delete(StretchyBuffer<T> *buffer, int i) {
+    ASSERT(i <= buffer->length - 1);
+    memmove(buffer->data + i, buffer->data + i + 1, (buffer->length - i - 1) * sizeof(T));
+    --buffer->length;
+}
+
+
 // Player thing???
 struct Position {
 	double x;
@@ -88,6 +133,14 @@ struct Position {
 		double slope = (a.y-b.y)/(a.x-b.x);
 		return slope;}
 
+	static Position average(std::initializer_list<Position> list) {
+		Position pos = Position();
+		for(Position temp : list) {
+			pos+=temp;
+		}
+		return divide(pos, list.size());
+	}
+
     static Position unitVector(Position start, Position end) {
         return Position{ Position::divide(Position::sub(end, start), Position::sub(end, start).length())};}
 
@@ -104,6 +157,12 @@ struct Position {
         pos.x = x - obj.x;
         pos.y = y - obj.y;
         return pos;
+    }
+    Position& operator+=(Position const& obj)
+    {
+        this->x += obj.x;
+		this->y += obj.y;
+		return *this;
     }
 };
 
@@ -136,6 +195,22 @@ union Color {
 		blue = 0;
 		alpha = 0;
 	}
+
+	bool operator==(const Color& other) {
+  		return 
+			this->red == other.red &&
+			this->green == other.green &&
+			this->blue == other.blue &&
+			this->alpha == other.alpha;
+	}
+	bool operator!=(const Color& other) {
+		return !(*this == other);
+	}
+
+	void print() {
+		NSLog(@"Red: %d, Green: %d, Blue: %d, Alpha: %d", this->red, this->green, this->blue, this->alpha);
+	}
+
 };
 
 const Color Red(255, 0, 0);
@@ -143,15 +218,35 @@ const Color Green(0, 255, 0);
 const Color Blue(0, 0, 255);
 const Color TeamColors[3] = {Green, Red, Red};
 
-static mac_game_controller KeyboardController = {};
-static mac_game_controller *GameController = &KeyboardController; 
-
+const uint16 qKeyCode = 0x0C;
 const uint16 wKeyCode = 0x0D;
 const uint16 eKeyCode = 0x0E;
+const uint16 rKeyCode = 0x0F;
+const uint16 tKeyCode = 0x11;
+const uint16 yKeyCode = 0x10;
+const uint16 uKeyCode = 0x20;
+const uint16 iKeyCode = 0x22;
+const uint16 oKeyCode = 0x1F;
+const uint16 pKeyCode = 0x23;
 const uint16 aKeyCode = 0x00;
 const uint16 sKeyCode = 0x01;
 const uint16 dKeyCode = 0x02;
-const uint16 qKeyCode = 0x0C;
+const uint16 fKeyCode = 0x03;
+const uint16 gKeyCode = 0x05;
+const uint16 hKeyCode = 0x04;
+const uint16 jKeyCode = 0x26;
+const uint16 kKeyCode = 0x28;
+const uint16 lKeyCode = 0x25;
+const uint16 zKeyCode = 0x06;
+const uint16 xKeyCode = 0x07;
+const uint16 cKeyCode = 0x08;
+const uint16 vKeyCode = 0x09;
+const uint16 bKeyCode = 0x0B;
+const uint16 nKeyCode = 0x2D;
+const uint16 mKeyCode = 0x2E;
+
+bool keyPressed[256];
+bool keyHeld[256];
 
 const int TeamPlayer = 0;
 const int TeamEnemy = 1;
@@ -168,7 +263,130 @@ int min(int a , int b) {
 bool between(int a, int b, int c) {
 	return a < b && b < c;}
 bool unorderedBetween(int a, int b, int c) {
-	return (a < b && b < c) || (c < b && a < c);}
+	return (a < b && b < c) || (c < b && b < a);}
+
+
+struct BasicImage {
+	uint16 height;
+	uint16 width;
+	uint8 *imageData;
+
+	void drawImage(Position a) {
+		uint8 *imageFeed = imageData;
+		//printf("%d", imageFeed[20*20*4-1]);
+		uint8 *row = (uint8 *)buffer;
+		row += pitch * (int)a.y;
+		for(int i = 0; i < height; i++) {
+			uint8_t *pixelChannel = (uint8_t *)row;
+			pixelChannel += (int)a.x*bytesPerPixel;
+			for(int j = 0; j <= width; j++) {
+				memcpy(pixelChannel, imageFeed, sizeof(Color));
+				pixelChannel+=4; }
+			row += pitch;
+			imageFeed += bytesPerPixel*width;
+		}
+	}
+};
+
+struct Instruction {
+	uint16 write;
+	uint16 jump;
+	Color color;
+	bool endline;
+};
+
+struct CompressedImage {
+	uint16 height;
+	uint16 width;
+	uint32 instructionLength;
+	Instruction *imageData;
+
+	void draw(Position a) {
+		uint8 *pixel = (uint8 *)buffer;
+		int curY = 0;
+		pixel += pitch * ((int)a.y+curY) + (int)a.x * bytesPerPixel;
+		for(int i = 0; i < instructionLength; i++) {
+			Instruction instruction = imageData[i];
+			for(int n = 0; n < instruction.write; n++) {
+				memcpy(pixel, &instruction.color, sizeof(Color));
+				pixel+=bytesPerPixel;
+			}
+			pixel+=instruction.jump*bytesPerPixel;
+			if(instruction.endline) {
+				curY++;
+				pixel = (uint8 *)buffer;
+				pixel += pitch * ((int)a.y+curY) + (int)a.x * bytesPerPixel;
+
+			}
+		}
+	}
+
+	void print() {
+		for (int i = 0; i < instructionLength; i++) {
+			NSLog(@"Color: %d %d %d %d", imageData[i].color.red, imageData[i].color.green, imageData[i].color.blue, imageData[i].color.alpha);
+		}
+	}
+};
+
+/*
+	States
+	c1 c1
+	c1 c2
+	c1 b
+	b c1
+	b b
+*/
+
+// TODO: convert tp do-while loop bc this sucks
+internal CompressedImage convertBasicToCompressed(BasicImage image) {
+	Color savedColor = Color(image.imageData[0], image.imageData[1], image.imageData[2], image.imageData[3]);
+	uint16 writeCount = 0;
+	uint16 jumpCount = 0;
+	bool blank = false;
+	bool endline = false;
+	StretchyBuffer<Instruction> instructions = {};
+	int index = 0;
+	int count = 0;
+	do {
+		Color currentColor = Color(image.imageData[index], image.imageData[index+1], image.imageData[index+2], image.imageData[index+3]);
+		count++;
+		if (endline) {
+			savedColor = currentColor;
+		}
+
+		endline = (index/4 + 1) % image.height == 0;
+
+		if (savedColor.alpha == 0) {
+			blank = true;
+		}
+		if (currentColor.alpha == 0 && blank) {
+			jumpCount++;
+		}
+		if (currentColor == savedColor && currentColor.alpha != 0) {
+			writeCount++;
+		}
+		if (currentColor != savedColor && currentColor.alpha == 0) {
+			jumpCount++;
+			blank = true;
+		}
+		if (endline || (currentColor != savedColor && currentColor.alpha != 0)) {
+			savedColor.print();
+			sbuff_push_back(&instructions, Instruction{writeCount, jumpCount, savedColor, endline});
+			savedColor = Color(currentColor);
+			//NSLog(@"")
+			writeCount = 1;
+			jumpCount = 0;
+			blank = false;
+		}
+
+
+		index += 4;	
+	} while (index+4 < image.width * image.height);
+
+	CompressedImage test = CompressedImage{image.height, image.width, static_cast<uint32>(instructions.length), instructions.data};
+
+	return CompressedImage{image.height, image.width, static_cast<uint32>(instructions.length), instructions.data};
+}
 
 //refreshes buffer
 void macOSRefreshBuffer(NSWindow *Window) {
@@ -192,7 +410,7 @@ internal double boundedMin(double nums[], int n, double lowBound) {
 	for(int i = 0; i < n; i++) {
 		min = nums[i] < min && nums[i] >= lowBound ? nums[i] : min;
 	}
-	NSLog(@"min: %f", min);
+	//NSLog(@"min: %f", min);
 	return min;
 }
 
@@ -206,7 +424,7 @@ internal double bounded2Min(double nums[], int n, double lowBound) {
 		} else if (nums[i] < min2 && nums[i] >= lowBound) {
 			min2 = nums[i];}
 	}
-	NSLog(@"min2: %f", min2);
+	//NSLog(@"min2: %f", min2);
 	return min2;
 }
 
@@ -470,6 +688,21 @@ struct Shape {
 		}
 	}
 
+	void drawRotating(double rpm) {
+		if(SHAPE_CODE == CIRCLE_SHAPE) {
+			drawCircle(center, radius, color);
+			return;
+		}
+		Position last = {center.x + (double)radius * cos(frames/(600.0/rpm)), center.y + (double)radius * sin(frames/(600.0/rpm))};
+		double step = TWO_PI/sides;
+		double offset = step + atan2((last.y-center.y), (last.x-center.x));
+		for(double theta = offset; theta < TWO_PI + offset; theta += step) {
+			Position next = {center.x + radius * cos(theta), center.y + radius * sin(theta)};
+			drawTriangle(center, last, next, color);
+			last = next;
+		}
+	}
+
 	void draw(int currentHealth, int maxHealth) {
 		if (currentHealth == 0) {
 			return;
@@ -504,24 +737,31 @@ struct Shape {
 			// (y - y1) = m(x - x1)
 			for (int n = 0; n < sides; n++) {
 				Position b = positions[n];
+				//NSLog(@"a: %f %f", a.x, a.y);
+				//NSLog(@"b: %f %f", b.x, b.y);
+				//NSLog(@"mouse: %f %f", pos.x, pos.y);
+
 				if (a.y == b.y) {
-					if (pos.y == a.y && unorderedBetween(a.x, pos.x, b.x)) {
+				}
+				else if (a.x == b.x) {
+					//NSLog(@"%d %d %d", pos.x < a.x, pos.x < b.x, unorderedBetween(a.y, pos.y, b.y));
+					if ((pos.x < a.x || pos.x < b.x) && unorderedBetween(a.y, pos.y, b.y)) {
+										//NSLog(@"b%d", intersectCount);	
 						intersectCount++;
 					}
-					continue;
 				}
-				if (a.x == b.x) {
-					if (pos.x == a.x && unorderedBetween(a.y, pos.y, b.y)) {
+				else {
+					double slope = Position::slope(a, positions[n]);
+					double intersectX = (pos.y - a.y) / slope + a.x;
+					if (pos.x > intersectX && unorderedBetween(a.y, pos.y, b.y)) {
 						intersectCount++;
+						NSLog(@"%d", n);
+						NSLog(@"%f %f", a.x, a.y);
+						NSLog(@"%f %f", b.x, b.y);
+						NSLog(@"c%d", intersectCount);	
 					}
-					continue;
 				}
-				double slope = Position::slope(a, positions[n]);
-				double intersectX = (pos.y - a.y) / slope + a.x;
-				if (unorderedBetween(a.x, intersectX, b.x)) {
-					intersectCount++;
-					continue;
-				}
+				a = b;
 			}
 
 			return intersectCount % 2;
@@ -597,6 +837,10 @@ struct Thing {
 				shape.draw(currentHealth, maxHealth);
 			}
 		}
+	}
+
+	void draw(int currentHealth, int maxHealth) {
+		shape.draw(currentHealth, maxHealth);
 	}
 };
 
@@ -692,6 +936,7 @@ internal void drawNgon(Position center, int radius, int n, Color c) {
 Thing player;
 Thing bullets[1024];
 Thing turrets[numTurrets];
+Thing objects[numObjects];
 
 bool circleTouch(Position p1, int r1, Position p2, int r2) {
 	return (p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y) <= (r1 + r2) * (r1 + r2);}
@@ -786,31 +1031,56 @@ void simulateBullets() {
 
 Thing *selected;
 Position offset;
-Shape radiusCircle;
+Shape scaleCircle;
+Shape *vertices;
 
 Thing* getSelected() {
 	//NSLog(@"%f, %f", player.shape.center.x, mousePos.x); 
 	//NSLog(@"%f, %f", player.shape.center.y - player.radius, mousePos.y); //Position::distance(mousePos, selected -> position - Position{0, static_cast<double>(selected -> shape.radius)}));
-	if (selected && radiusCircle.touch(mousePos)) {
-		NSLog(@"wow");
-		return selected;
+	if (selected) {
+		if (selected->shape.SHAPE_CODE != CIRCLE_SHAPE) {
+			Position previous = selected->shape.positions[selected->shape.sides-1];
+			for (int i = 0; i < selected->shape.sides; i++) {
+				if (circleTouch(Position::average({previous, selected->shape.positions[i]}), 3, mousePos, 0)){
+					return selected;
+				}
+				previous = selected->shape.positions[i];
+			}
+		}
+		else if (scaleCircle.touch(mousePos)) {
+			return selected;
+		}
+
 	}
 	for (Thing &t: turrets) {
 		if (t.shape.touch(mousePos)) {
 			return &t;
 		}}
+	for (Thing &o: objects) {
+		if (o.shape.touch(mousePos)) {
+			return &o;
+		}
+	}
 	if (player.shape.touch(mousePos)) {
 		return &player;
 	}
-	return nullptr;
+	return NULL;
 }
 
+/*
+	0 - unselected
+	1 - 
+*/
 uint16 curUse;
+Position lastMouse;
 
 void editor() {
 	for (Thing t: turrets) {
 		t.currentHealth = t.maxHealth;
 		t.draw();}
+	for (Thing o: objects) {
+		o.draw();
+	}
 	player.draw();
 
 	if (click) {
@@ -818,24 +1088,82 @@ void editor() {
 		selected = getSelected();
 		if(selected) {
 			offset = selected -> shape.center - mousePos;
+			lastMouse = mousePos;
 		}
-		NSLog(@"%f", offset.y);
+		//NSLog(@"%f", offset.y);
 	}
 
+// 				Position change = mousePos - selected -> shape.center + offset;
+// 			offset = selected -> shape.center - mousePos;
+
+// mousePos - selected -> shape.center + selected -> shape.center - mousePos;
+
 	if (selected) {
-		radiusCircle = Circle(selected -> shape.center - Position{0, static_cast<double>(selected -> shape.radius)}, 3, Green);
-		radiusCircle.draw();
+		scaleCircle = Circle(selected -> shape.center - Position{0, static_cast<double>(selected -> shape.radius)}, 3, Green);
+
+		if (selected->shape.SHAPE_CODE != CIRCLE_SHAPE) {
+			Position previous = selected->shape.positions[selected->shape.sides-1];
+			for (int i = 0; i < selected->shape.sides; i++) {
+				Circle(Position::average({previous, selected->shape.positions[i]}), 3, Green).draw();
+				previous = selected->shape.positions[i];
+			}
+		}
+		else {
+			scaleCircle.draw();
+		}
+
 		if (leftMouseButtonDown) {
-			if (curUse == 1 || (curUse == 0 && radiusCircle.touch(mousePos))) {
-				NSLog(@"wow %f      %f \n %f       %f", mousePos.y, selected -> shape.center.y, selected -> shape.radius, offset.y);
+			int index = -3;
+			if (selected->shape.SHAPE_CODE != CIRCLE_SHAPE) {
+				Position previous = selected->shape.positions[selected->shape.sides-1];
+				for (int i = 0; i < selected->shape.sides; i++) {
+					if (circleTouch(Position::average({previous, selected->shape.positions[i]}), 3, mousePos, 0)){
+						//NSLog(@"%d %d", i, index);
+						index = i;
+					}
+					previous = selected->shape.positions[i];
+				}
+			}
+			// what the fuck is this variable idk how it works
+			Position change = mousePos - lastMouse;
+			NSLog(@"%f %f %f %f", mousePos.x, mousePos.y, selected -> shape.center.x, selected -> shape.center.y);
+			NSLog(@"%f %f", change.x, change.y);
+			if (curUse == 1 || (selected->shape.SHAPE_CODE == CIRCLE_SHAPE && curUse == 0 && scaleCircle.touch(mousePos))) {
+				//NSLog(@"wow %f      %f \n %f       %f", mousePos.y, selected -> shape.center.y, selected -> shape.radius, offset.y);
 				selected -> shape.radius = selected -> shape.center.y - mousePos.y;
 				curUse = 1;
-			}
-			else {
-				selected -> shape.center = mousePos + offset;
+			} else if (curUse == 2 || (curUse == 0 && index != -3)) {
+				double xPos = 0;
+				double yPos = 0;
+				int sides = selected->shape.sides;
+				// need to find change in direction perpindicular to line
+				//NSLog(@"Before: %f %f", selected->shape.positions[index].x, selected->shape.positions[index].y);
+				selected->shape.positions[index] += change;
+				selected->shape.positions[(index-1)%sides] += change;
+				//NSLog(@"After: %f %f", selected->shape.positions[index].x, selected->shape.positions[index].y);
+				for(int n = 0; n < sides; n++) {
+					xPos += selected->shape.positions[n].x;
+					yPos += selected->shape.positions[n].y;
+					//NSLog(@"%f %f", selected->shape.positions[n].x, selected->shape.positions[n].y);
+				}
+				selected->shape.center = {xPos/sides, yPos/sides};
+				//NSLog(@"%f %f", selected->shape.center.x, selected->shape.center.y);
+
+
 				curUse = 2;
 			}
-
+			// moving the shape
+			else {
+				curUse = 3;
+				selected -> shape.center += change;
+				if (selected->shape.SHAPE_CODE != CIRCLE_SHAPE) {
+					for (int i = 0; i < selected->shape.sides; i++) {
+						selected->shape.positions[i] += change;
+					}
+				}	
+				NSLog(@"Change: %f %f", change.x, change.y);
+			}
+			lastMouse = mousePos;
 			//NSLog(@"this should work");
 		}
 	}
@@ -874,22 +1202,47 @@ macGetSecondsElapsed(mach_timebase_info_data_t *timeBase,
     return (result);
 }
 
-void game() {
-	simulateBullets();
-	simulateTurrets();
+void updatePlayer() {
+	// upadtes player position based on buttons pressed	
+	Position playerV = { 0, 0 };	
+	if (keyPressed[wKeyCode]) {playerV.y-=10;}
+	if (keyPressed[sKeyCode]) {playerV.y+=10;}
+	if (keyPressed[aKeyCode]) {playerV.x-=10;}
+	if (keyPressed[dKeyCode]) {playerV.x+=10;}
+	if (playerV.length() != 0)
+		player.shape.center.add( { playerV.unitVector().x * gameSpeed,  playerV.unitVector().y * gameSpeed});
+	player.shape.center.x = min(player.shape.center.x, bitmapWidth);
+	player.shape.center.x = max(player.shape.center.x, 0);
+	player.shape.center.y = min(player.shape.center.y, bitmapHeight);
+	player.shape.center.y = max(player.shape.center.y, 0);
+
 	player.draw();
 	if (click || leftMouseButtonDown) {
 		fireBullet(player, mousePos);
 	}
+}
+
+void game() {
+	simulateBullets();
+	simulateTurrets();
+	updatePlayer();
 	checkGameState();
 }
 
+
 int main(int args, const char * argv[]) {
+	//vector<int> g1;
+	//g1.push_back(2);
+
+	Position b[] = {Position{200, 200}, Position{200, 100}, Position{100, 100}, Position{100, 200}, Position{150, 250}};
+	Position a[] = {Position{200, 200}, Position{100, 100}, Position{300, 100}};
 	player = Turret(TeamPlayer, Circle(Position(512, 380), 10.0, Blue), 32, 10, 10, 10);
 	for (Thing &t: turrets) {
 		Position p = Position(rand() % (GlobalRenderingWidth-50) +25, rand() % (GlobalRenderingHeight-50)+25);
 		t = Turret(TeamEnemy, Circle(p, 20.0, Red), 30, 10, 10, 0);
 	}
+	objects[0] = ConvexPolygon(5, b, Red);
+	//objects[0].draw(1, 2);
 
 
     TwinMainWindowDelegate *MainWindowDelegate = [[TwinMainWindowDelegate alloc] init];
@@ -926,6 +1279,16 @@ int main(int args, const char * argv[]) {
     mach_timebase_info_data_t timeBase;
     mach_timebase_info(&timeBase);
 
+	uint8_t save[20*20*4];
+	//for (int i = 0; i < 20*20; i++) 
+	memset(save, (uint8_t)255, 20*20*4);
+	//memset(save, (uint8_t)100, 10*20*4);
+	//memset(save, (uint8_t)200, 5*20*4);
+	BasicImage startScreen = BasicImage{20, 20, save};
+
+	CompressedImage test = convertBasicToCompressed(startScreen);
+	test.print();
+
     uint64_t lastCounter = mach_absolute_time();  
 
 	//main run loop
@@ -944,21 +1307,13 @@ int main(int args, const char * argv[]) {
 					dequeue: YES];
 			switch ([event type]) {
 				case NSEventTypeKeyDown:
-					if (event.keyCode == wKeyCode) { KeyboardController.wKeyState = true; }
-					if (event.keyCode == aKeyCode) { KeyboardController.aKeyState = true; }
-					if (event.keyCode == sKeyCode) { KeyboardController.sKeyState = true; }
-					if (event.keyCode == dKeyCode) { KeyboardController.dKeyState = true; }
-					if (event.keyCode == eKeyCode) { KeyboardController.eKeyState = !KeyboardController.eKeyState; 
-						selected = nullptr;}
+					keyPressed[event.keyCode] = true;
+					keyHeld[event.keyCode] = !keyHeld[event.keyCode];
 					if (event.keyCode == qKeyCode) { Running = false;}
 					[NSApp sendEvent: event];
 					break;
 				case NSEventTypeKeyUp:
-					if (event.keyCode == wKeyCode) { KeyboardController.wKeyState = false; }
-					if (event.keyCode == aKeyCode) { KeyboardController.aKeyState = false; }
-					if (event.keyCode == sKeyCode) { KeyboardController.sKeyState = false; }
-					if (event.keyCode == dKeyCode) { KeyboardController.dKeyState = false; }
-
+					keyPressed[event.keyCode] = false;
 					[NSApp sendEvent: event];
 					break;
 				case NSEventTypeLeftMouseDown:
@@ -993,18 +1348,6 @@ int main(int args, const char * argv[]) {
 					//NSLog(@"mouse down");
 				}
 
-		// upadtes player position based on buttons pressed	
-		Position playerV = { 0, 0 };	
-        if (GameController->wKeyState == true) {playerV.y-=10;}
-        if (GameController->sKeyState == true) {playerV.y+=10;}
-        if (GameController->aKeyState == true) {playerV.x-=10;}
-        if (GameController->dKeyState == true) {playerV.x+=10;}
-		if (playerV.length() != 0)
-			player.shape.center.add( { playerV.unitVector().x * gameSpeed,  playerV.unitVector().y * gameSpeed});
-		player.shape.center.x = min(player.shape.center.x, bitmapWidth);
-		player.shape.center.x = max(player.shape.center.x, 0);
-		player.shape.center.y = min(player.shape.center.y, bitmapHeight);
-		player.shape.center.y = max(player.shape.center.y, 0);
 
 		//updating game objects
 		clearScreen();
@@ -1012,12 +1355,13 @@ int main(int args, const char * argv[]) {
 		//flatBottomTriangle(Position{200, 200}, Position{100, 100}, Position{300, 100}, Red);
 		//flatTopTriangle(Position{200, 200}, Position{100, 300}, Position{300, 300}, Red);
 		//drawTriangle(Position{200, 200}, Position{300, 150}, Position{100, 100}, Red);
-		Position b[] = {Position{200, 200}, Position{200, 100}, Position{100, 100}, Position{100, 200}};
-		Position a[] = {Position{200, 200}, Position{100, 100}, Position{300, 100}};
-		ConvexPolygon(4, b, Red).draw(abs(sin(frames/(600.0/30))*100), 100);
-		NSLog(@"%f", abs(sin(frames/(600.0/30))));
-		if (GameController -> eKeyState) {
+		//NSLog(@"%f", abs(sin(frames/(600.0/30))));
+
+		ConvexPolygon(5, b, Red).draw(abs(sin(frames/(600.0/30))*100), 100);
+		objects[0].draw(1, 2);
+		if (keyHeld[eKeyCode]) {
 			editor();
+			//test.draw(Position(512, 380));
 		}
 		else {
 			game();
@@ -1076,5 +1420,6 @@ int main(int args, const char * argv[]) {
 		// 	
 		macOSRedrawBuffer(Window);
 	}
+
 	printf("Twinstick Finished Building"); 
 }
